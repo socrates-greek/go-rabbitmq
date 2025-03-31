@@ -306,7 +306,6 @@ func (publisher *Publisher) Close() {
 		}()
 		publisher.chanManager.Close() // 关闭 AMQP 通道
 		// 关闭 AMQP 连接（假设 connManager 有 Close 方法）
-		publisher.connManager.Close()
 	})
 }
 
