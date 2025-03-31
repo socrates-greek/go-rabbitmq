@@ -135,7 +135,7 @@ func (publisher *Publisher) startup() error {
 		return fmt.Errorf("declare exchange failed: %w", err)
 	}
 	go publisher.startNotifyFlowHandler()
-	go publisher.startNotifyBlockedHandler()
+	//go publisher.startNotifyBlockedHandler()
 	return nil
 }
 
