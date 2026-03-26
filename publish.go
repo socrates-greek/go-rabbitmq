@@ -135,7 +135,7 @@ func (publisher *Publisher) startup() error {
 		return fmt.Errorf("declare exchange failed: %w", err)
 	}
 	go publisher.startNotifyFlowHandler()
-	//go publisher.startNotifyBlockedHandler()
+	go publisher.startNotifyBlockedHandler()
 	return nil
 }
 
@@ -282,17 +282,16 @@ func (publisher *Publisher) PublishWithDeferredConfirmWithContext(
 // Only call Close() once
 func (publisher *Publisher) Close() {
 	// close the channel so that rabbitmq server knows that the
-	close(publisher.stopCh)
 	// publisher has been stopped.
-	close(publisher.closeConnectionToManagerCh)
+	close(publisher.stopCh)
 	err := publisher.chanManager.Close()
 	if err != nil {
 		publisher.options.Logger.Warnf("error while closing the channel: %v", err)
 	}
-	//publisher.options.Logger.Infof("closing publisher...")
-	//go func() {
-	//	publisher.closeConnectionToManagerCh <- struct{}{}
-	//}()
+	publisher.options.Logger.Infof("closing publisher...")
+	go func() {
+		publisher.closeConnectionToManagerCh <- struct{}{}
+	}()
 }
 
 // NotifyReturn registers a listener for basic.return methods.

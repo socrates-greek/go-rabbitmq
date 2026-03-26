@@ -32,9 +32,8 @@ type Consumer struct {
 	reconnectErrCh             <-chan error
 	closeConnectionToManagerCh chan<- struct{}
 	options                    ConsumerOptions
-
-	isClosedMux *sync.RWMutex
-	isClosed    bool
+	isClosedMux                *sync.RWMutex
+	isClosed                   bool
 }
 
 // Delivery captures the fields for a previously delivered message resident in
@@ -180,32 +179,60 @@ func (consumer *Consumer) getIsClosed() bool {
 }
 
 func handlerGoroutine(consumer *Consumer, msgs <-chan amqp.Delivery, consumeOptions ConsumerOptions, handler Handler) {
+	// 创建批量确认管理器
+	var batchAckMgr *BatchAckManager
+	if consumeOptions.EnableBatchAck {
+		batchAckMgr = NewBatchAckManager(
+			consumer.chanManager.GetChannel(), // 需要暴露 channel
+			consumeOptions.BatchSize,
+			consumeOptions.BatchTimeout,
+			consumer.options.Logger,
+		)
+		defer batchAckMgr.Close()
+	}
+
 	for msg := range msgs {
 		if consumer.getIsClosed() {
 			break
 		}
-
 		if consumeOptions.RabbitConsumerOptions.AutoAck {
 			handler(Delivery{msg})
 			continue
 		}
-
-		switch handler(Delivery{msg}) {
+		action := handler(Delivery{msg})
+		switch action {
 		case Ack:
-			err := msg.Ack(false)
-			if err != nil {
-				consumer.options.Logger.Errorf("can't ack message: %v", err)
+			if consumeOptions.EnableBatchAck && batchAckMgr != nil {
+				// 加入批量确认队列，不立即确认
+				batchAckMgr.AddTag(msg.DeliveryTag)
+			} else {
+				err := msg.Ack(false)
+				if err != nil {
+					consumer.options.Logger.Errorf("can't ack message: %v", err)
+				}
 			}
 		case NackDiscard:
+			// 先 flush 批量确认，再 nack
+			if consumeOptions.EnableBatchAck && batchAckMgr != nil {
+				batchAckMgr.flush()
+			}
 			err := msg.Nack(false, false)
 			if err != nil {
 				consumer.options.Logger.Errorf("can't nack message: %v", err)
 			}
 		case NackRequeue:
+			if consumeOptions.EnableBatchAck && batchAckMgr != nil {
+				batchAckMgr.flush()
+			}
 			err := msg.Nack(false, true)
 			if err != nil {
 				consumer.options.Logger.Errorf("can't nack message: %v", err)
 			}
+		case Manual:
+			// Manual 模式下，用户需要自己调用 msg.Ack() 或 msg.Nack()
+			// 这里不做任何操作
+		default:
+			consumer.options.Logger.Warnf("unknown action type: %d, message will not be acknowledged", action)
 		}
 	}
 	consumer.options.Logger.Infof("rabbit consumer goroutine closed")

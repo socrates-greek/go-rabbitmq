@@ -82,6 +82,12 @@ func (chanManager *ChannelManager) startNotifyCancelOrClosed() {
 	}
 }
 
+func (chanManager *ChannelManager) GetChannel() *amqp.Channel {
+	chanManager.channelMux.RLock()
+	defer chanManager.channelMux.RUnlock()
+	return chanManager.channel
+}
+
 // GetReconnectionCount -
 func (chanManager *ChannelManager) GetReconnectionCount() uint {
 	chanManager.reconnectionCountMux.Lock()

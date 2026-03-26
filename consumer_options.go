@@ -1,6 +1,8 @@
 package rabbitmq
 
 import (
+	"time"
+
 	"github.com/Bifang-Bird/go-rabbitmq/internal/logger"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -37,11 +39,14 @@ func getDefaultConsumerOptions(queueName string) ConsumerOptions {
 			Args:       Table{},
 			Declare:    false,
 		},
-		Bindings:    []Binding{},
-		Concurrency: 1,
-		Logger:      stdDebugLogger{},
-		QOSPrefetch: 10,
-		QOSGlobal:   false,
+		Bindings:       []Binding{},
+		Concurrency:    1,
+		Logger:         stdDebugLogger{},
+		QOSPrefetch:    10,
+		QOSGlobal:      false,
+		EnableBatchAck: false,
+		BatchSize:      50,
+		BatchTimeout:   1000 * time.Millisecond,
 	}
 }
 
@@ -66,6 +71,9 @@ type ConsumerOptions struct {
 	Logger                logger.Logger
 	QOSPrefetch           int
 	QOSGlobal             bool
+	EnableBatchAck        bool
+	BatchSize             int           // 新增：批量大小，默认 50
+	BatchTimeout          time.Duration // 新增：超时时间，默认 500ms
 }
 
 // RabbitConsumerOptions are used to configure the consumer
@@ -292,4 +300,10 @@ func WithConsumerOptionsQueueQuorum(options *ConsumerOptions) {
 	}
 
 	options.QueueOptions.Args["x-queue-type"] = "quorum"
+}
+
+// WithConsumerOptionsEnableBatchAck enables batch acknowledgment mode,
+// which allows acknowledging multiple messages at once using cumulative acknowledgment
+func WithConsumerOptionsEnableBatchAck(options *ConsumerOptions) {
+	options.EnableBatchAck = true
 }

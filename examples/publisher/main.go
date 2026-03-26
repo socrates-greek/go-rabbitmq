@@ -14,7 +14,7 @@ import (
 
 func main() {
 	conn, err := rabbitmq.NewConn(
-		"amqp://guest:guest@localhost",
+		"amqp://Simba_admin:Simba_123@192.168.20.201:30672/",
 		rabbitmq.WithConnectionOptionsLogging,
 	)
 	if err != nil {
@@ -62,7 +62,7 @@ func main() {
 		case <-ticker.C:
 			err = publisher.PublishWithContext(
 				context.Background(),
-				[]byte("hello, world"),
+				[]byte("hello, world"+time.Now().String()),
 				[]string{"my_routing_key"},
 				rabbitmq.WithPublishOptionsContentType("application/json"),
 				rabbitmq.WithPublishOptionsMandatory,
