@@ -46,7 +46,7 @@ func getDefaultConsumerOptions(queueName string) ConsumerOptions {
 		QOSGlobal:      false,
 		EnableBatchAck: false,
 		BatchSize:      50,
-		BatchTimeout:   1000 * time.Millisecond,
+		BatchTimeout:   500 * time.Millisecond,
 	}
 }
 
