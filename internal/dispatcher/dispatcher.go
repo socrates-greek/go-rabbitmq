@@ -1,72 +1,69 @@
 package dispatcher
 
 import (
-	"log"
-	"math"
-	"math/rand"
 	"sync"
-	"time"
 )
 
-// Dispatcher -
+// Dispatcher manages subscribers who want to be notified of events (like reconnections)
 type Dispatcher struct {
 	subscribers    map[int]dispatchSubscriber
-	subscribersMux *sync.Mutex
+	subscribersMux sync.RWMutex
+	nextID         int
 }
 
 type dispatchSubscriber struct {
-	notifyCancelOrCloseChan chan error
-	closeCh                 <-chan struct{}
+	notifyChan chan error
+	closeCh    <-chan struct{}
 }
 
-// NewDispatcher -
+// NewDispatcher creates a new event dispatcher
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
-		subscribers:    make(map[int]dispatchSubscriber),
-		subscribersMux: &sync.Mutex{},
+		subscribers: make(map[int]dispatchSubscriber),
 	}
 }
 
-// Dispatch -
-func (d *Dispatcher) Dispatch(err error) error {
-	d.subscribersMux.Lock()
-	defer d.subscribersMux.Unlock()
+// Dispatch sends an error to all subscribers in a non-blocking way
+func (d *Dispatcher) Dispatch(err error) {
+	d.subscribersMux.RLock()
+	defer d.subscribersMux.RUnlock()
+
 	for _, subscriber := range d.subscribers {
 		select {
-		case <-time.After(time.Second * 5):
-			log.Println("Unexpected rabbitmq error: timeout in dispatch")
-		case subscriber.notifyCancelOrCloseChan <- err:
+		case subscriber.notifyChan <- err:
+		default:
+			// If the subscriber's buffer is full, we skip it to avoid blocking the whole system.
+			// This is safe because reconnections are periodic events.
 		}
 	}
-	return nil
 }
 
-// AddSubscriber -
+// AddSubscriber adds a new subscriber and returns a channel for notifications and a channel to trigger removal
 func (d *Dispatcher) AddSubscriber() (<-chan error, chan<- struct{}) {
-	const maxRand = math.MaxInt
-	const minRand = 0
-	id := rand.Intn(maxRand-minRand) + minRand
-
-	closeCh := make(chan struct{})
-	notifyCancelOrCloseChan := make(chan error)
-
 	d.subscribersMux.Lock()
-	d.subscribers[id] = dispatchSubscriber{
-		notifyCancelOrCloseChan: notifyCancelOrCloseChan,
-		closeCh:                 closeCh,
-	}
-	d.subscribersMux.Unlock()
+	defer d.subscribersMux.Unlock()
 
-	go func(id int) {
-		<-closeCh
+	id := d.nextID
+	d.nextID++
+
+	// Use a buffered channel to prevent blocking the dispatcher
+	notifyChan := make(chan error, 1)
+	closeCh := make(chan struct{})
+
+	d.subscribers[id] = dispatchSubscriber{
+		notifyChan: notifyChan,
+		closeCh:    closeCh,
+	}
+
+	go func(id int, c <-chan struct{}) {
+		<-c
 		d.subscribersMux.Lock()
 		defer d.subscribersMux.Unlock()
-		sub, ok := d.subscribers[id]
-		if !ok {
-			return
+		if sub, ok := d.subscribers[id]; ok {
+			close(sub.notifyChan)
+			delete(d.subscribers, id)
 		}
-		close(sub.notifyCancelOrCloseChan)
-		delete(d.subscribers, id)
-	}(id)
-	return notifyCancelOrCloseChan, closeCh
+	}(id, closeCh)
+
+	return notifyChan, closeCh
 }
