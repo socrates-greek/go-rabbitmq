@@ -86,11 +86,25 @@ func NewPublisher(conn *Conn, optionFuncs ...func(*PublisherOptions)) (*Publishe
 		cancel:                     cancel,
 	}
 
+	// 1. 执行初始化的拓扑声明
 	err = publisher.startup()
 	if err != nil {
 		cancel()
 		return nil, err
 	}
+
+	// 2. 启动常驻的监听协程（只启动一次，内部会自动处理重连后的通道变化）
+	publisher.wg.Add(1)
+	go func() {
+		defer publisher.wg.Done()
+		publisher.startNotifyFlowHandler()
+	}()
+
+	publisher.wg.Add(1)
+	go func() {
+		defer publisher.wg.Done()
+		publisher.startNotifyBlockedHandler()
+	}()
 
 	if options.ConfirmMode {
 		publisher.NotifyPublish(func(_ Confirmation) {
@@ -98,6 +112,7 @@ func NewPublisher(conn *Conn, optionFuncs ...func(*PublisherOptions)) (*Publishe
 		})
 	}
 
+	// 3. 启动重连恢复监听
 	go func() {
 		for {
 			select {
@@ -108,10 +123,13 @@ func NewPublisher(conn *Conn, optionFuncs ...func(*PublisherOptions)) (*Publishe
 					return
 				}
 				publisher.options.Logger.Infof("successful publisher recovery from: %v", err)
+
+				// 重连后只需重新声明拓扑，监听器协程内部通过 chanManager.GetChannel() 自动适配新通道
 				if err := publisher.startup(); err != nil {
 					publisher.options.Logger.Errorf("error on startup for publisher after recovery: %v", err)
 					continue
 				}
+				// 重新启动 Return 和 Publish 处理（如果已设置）
 				publisher.startReturnHandler()
 				publisher.startPublishHandler()
 			}
@@ -122,14 +140,11 @@ func NewPublisher(conn *Conn, optionFuncs ...func(*PublisherOptions)) (*Publishe
 }
 
 func (publisher *Publisher) startup() error {
+	// 拓扑声明是幂等的，且在重连后必须执行
 	err := declareExchange(publisher.chanManager, publisher.options.ExchangeOptions)
 	if err != nil {
 		return fmt.Errorf("declare exchange failed: %w", err)
 	}
-
-	publisher.startNotifyFlowHandler()
-	publisher.startNotifyBlockedHandler()
-
 	return nil
 }
 
@@ -264,12 +279,14 @@ func (publisher *Publisher) Close() {
 	publisher.options.Logger.Infof("closing publisher...")
 	publisher.cancel()
 
+	// 先等待所有后台协程处理完当前逻辑退出
+	publisher.wg.Wait()
+
+	// 最后关闭底层的 channel 管理器
 	err := publisher.chanManager.Close()
 	if err != nil {
 		publisher.options.Logger.Warnf("error while closing the channel manager: %v", err)
 	}
-
-	publisher.wg.Wait()
 
 	select {
 	case publisher.closeConnectionToManagerCh <- struct{}{}:
@@ -312,6 +329,8 @@ func (publisher *Publisher) startReturnHandler() {
 	publisher.wg.Add(1)
 	go func() {
 		defer publisher.wg.Done()
+		// 注意：NotifyReturnSafe 内部使用的是当前的 Channel
+		// 在重连时，这个协程会因为 ctx.Done 退出，然后被 NewPublisher 中的 recovery 逻辑重新启动
 		returns := publisher.chanManager.NotifyReturnSafe(make(chan amqp.Return, 1))
 		for {
 			select {
