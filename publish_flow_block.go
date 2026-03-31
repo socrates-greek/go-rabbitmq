@@ -23,7 +23,7 @@ func (publisher *Publisher) startNotifyFlowHandler() {
 
 func (publisher *Publisher) startNotifyBlockedHandler() {
 	blockings := publisher.connManager.NotifyBlockedSafe(make(chan amqp.Blocking))
-	defer close(blockings) // 确保通道在 goroutine 退出时关闭
+	//defer close(blockings) // 确保通道在 goroutine 退出时关闭
 	publisher.disablePublishDueToBlockedMux.Lock()
 	publisher.disablePublishDueToBlocked = false
 	publisher.disablePublishDueToBlockedMux.Unlock()
