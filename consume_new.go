@@ -15,10 +15,10 @@ import (
 type Action int
 
 const (
-	Ack Action = iota
-	NackDiscard
-	NackRequeue
-	Manual // 手动ACK，业务自行处理
+	Ack         Action = iota
+	NackDiscard        // 丢弃消息
+	NackRequeue        // 重新入队
+	Manual             // 手动ACK，业务自行处理（框架不做任何操作）
 )
 
 type Handler func(d Delivery) (action Action)
@@ -38,10 +38,6 @@ type Consumer struct {
 	consumerCtx                context.Context
 	consumerCancel             context.CancelFunc
 	startMux                   sync.Mutex
-}
-
-type ackSession struct {
-	batchAckChan chan uint64
 }
 
 func NewConsumer(
@@ -79,7 +75,7 @@ func NewConsumer(
 		return nil, err
 	}
 
-	// 重连指数退避
+	// 重连逻辑
 	go func() {
 		retryInterval := time.Second
 		maxInterval := 10 * time.Second
@@ -148,28 +144,20 @@ func (consumer *Consumer) start(handler Handler) error {
 		return err
 	}
 
-	session := &ackSession{
-		batchAckChan: make(chan uint64, consumer.calculateBatchAckChanCapacity()),
-	}
-
-	if consumer.options.EnableBatchAck && !consumer.options.RabbitConsumerOptions.AutoAck {
-		consumer.wg.Add(1)
-		go consumer.batchAckCoordinator(consumer.consumerCtx, session, ch)
-	}
-
-	// 启动worker
+	// 启动并发 Worker
 	for i := 0; i < consumer.options.Concurrency; i++ {
 		consumer.wg.Add(1)
-		go consumer.handlerWorker(consumer.consumerCtx, session, msgs, handler)
+		go consumer.handlerWorker(consumer.consumerCtx, msgs, handler)
 	}
 
-	consumer.options.Logger.Infof("Consumer started, workers=%d, batch=%v, prefetch=%d",
-		consumer.options.Concurrency, consumer.options.EnableBatchAck, consumer.options.QOSPrefetch)
+	consumer.options.Logger.Infof("Consumer started, workers=%d, prefetch=%d",
+		consumer.options.Concurrency, consumer.options.QOSPrefetch)
 	return nil
 }
 
 func (consumer *Consumer) setupTopology() error {
 	ops := consumer.options
+	// QOSPrefetch 决定了管道里能积压多少条消息未确认
 	if err := consumer.chanManager.QosSafe(ops.QOSPrefetch, 0, ops.QOSGlobal); err != nil {
 		return fmt.Errorf("qos failed: %w", err)
 	}
@@ -182,83 +170,23 @@ func (consumer *Consumer) setupTopology() error {
 	return declareBindings(consumer.chanManager, ops)
 }
 
-// 批量ACK协程：增加map清理，防止内存泄漏
-func (consumer *Consumer) batchAckCoordinator(ctx context.Context, session *ackSession, ch *amqp.Channel) {
-	defer consumer.wg.Done()
-
-	batchAckChan := session.batchAckChan
-	expectedTag := uint64(1)
-	var lastAckedTag uint64 = 0
-	completedTags := make(map[uint64]bool, consumer.options.BatchSize*2)
-
-	ticker := time.NewTicker(consumer.options.BatchTimeout)
-	defer ticker.Stop()
-
-	flush := func() {
-		highestSafeTag := expectedTag - 1
-		if highestSafeTag > lastAckedTag {
-			if ch.IsClosed() {
-				return
-			}
-			if err := ch.Ack(highestSafeTag, true); err != nil {
-				consumer.options.Logger.Errorf("batch ack failed: %v", err)
-			} else {
-				lastAckedTag = highestSafeTag
-				// 优化：清理已ACK的tag，防止内存泄漏
-				for tag := range completedTags {
-					if tag <= highestSafeTag {
-						delete(completedTags, tag)
-					}
-				}
-			}
-		}
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			flush()
-			return
-		case tag, ok := <-batchAckChan:
-			if !ok {
-				flush()
-				return
-			}
-			completedTags[tag] = true
-			for completedTags[expectedTag] {
-				delete(completedTags, expectedTag)
-				expectedTag++
-			}
-			if (expectedTag-1)-lastAckedTag >= uint64(consumer.options.BatchSize) {
-				flush()
-			}
-		case <-ticker.C:
-			flush()
-		}
-	}
-}
-
-// 【终极修复】全链路panic捕获 + 处理Manual动作 + 修复CPU空转
 func (consumer *Consumer) handlerWorker(
 	ctx context.Context,
-	session *ackSession,
 	msgs <-chan amqp.Delivery,
 	handler Handler,
 ) {
 	defer consumer.wg.Done()
-	batchAckChan := session.batchAckChan
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case msg, ok := <-msgs:
-			// 修复：通道关闭直接退出，由重连逻辑重建worker，不CPU空转
 			if !ok || consumer.getIsClosed() {
 				return
 			}
 
-			// 修复：全流程捕获panic，覆盖 handler + ack/nack 所有阶段
+			// 捕获 panic 确保 worker 不挂掉，并将 panic 视为需要重试的情况
 			var action Action
 			func() {
 				defer func() {
@@ -271,86 +199,38 @@ func (consumer *Consumer) handlerWorker(
 				action = handler(Delivery{msg})
 			}()
 
+			// 如果是自动确认模式，不需要进行 Ack/Nack 操作
 			if consumer.options.RabbitConsumerOptions.AutoAck {
 				continue
 			}
 
-			// 修复：增加 Manual 动作处理（不做任何操作，业务手动ACK）
+			// 处理返回动作
 			switch action {
 			case Ack:
-				if consumer.options.EnableBatchAck {
-					if !consumer.sendToBatchAck(batchAckChan, msg.DeliveryTag) {
-						if err := msg.Ack(false); err != nil {
-							consumer.options.Logger.Errorf("fallback ack failed: %v", err)
-						}
-					}
-				} else {
-					if err := msg.Ack(false); err != nil {
-						consumer.options.Logger.Errorf("single ack failed: %v", err)
-					}
+				// 单条 Ack，不再使用 batch 逻辑，规避序列断裂风险
+				if err := msg.Ack(false); err != nil {
+					consumer.options.Logger.Errorf("ack failed: %v, tag=%d", err, msg.DeliveryTag)
 				}
 			case NackDiscard:
+				// 拒绝并丢弃
 				if err := msg.Nack(false, false); err != nil {
-					consumer.options.Logger.Errorf("nack discard failed: %v", err)
+					consumer.options.Logger.Errorf("nack discard failed: %v, tag=%d", err, msg.DeliveryTag)
 				}
 			case NackRequeue:
+				// 拒绝并重新入队
 				if err := msg.Nack(false, true); err != nil {
-					consumer.options.Logger.Errorf("nack requeue failed: %v", err)
+					consumer.options.Logger.Errorf("nack requeue failed: %v, tag=%d", err, msg.DeliveryTag)
 				}
 			case Manual:
-				// 手动ACK模式：不做任何操作，业务自行处理
-				consumer.options.Logger.Debugf("manual ack mode, skip processing tag: %d", msg.DeliveryTag)
+				// 业务层自己调用了 msg.Ack/Nack，框架这里什么都不做
+				consumer.options.Logger.Debugf("manual mode, tag=%d", msg.DeliveryTag)
+			default:
+				// 兜底：默认 ACK 还是 NACK 视业务而定，通常建议 NACK 重新入队以防丢失
+				consumer.options.Logger.Warnf("unknown action, fallback to requeue: %d", msg.DeliveryTag)
+				_ = msg.Nack(false, true)
 			}
 		}
 	}
-}
-
-// 优化：复用timer对象，减少GC
-var sendTimerPool = sync.Pool{
-	New: func() interface{} {
-		return time.NewTimer(2 * time.Millisecond)
-	},
-}
-
-func (consumer *Consumer) sendToBatchAck(ch chan uint64, tag uint64) bool {
-	select {
-	case ch <- tag:
-		return true
-	default:
-	}
-
-	timer := sendTimerPool.Get().(*time.Timer)
-	defer sendTimerPool.Put(timer)
-	defer timer.Stop()
-
-	select {
-	case ch <- tag:
-		return true
-	case <-timer.C:
-		return false
-	}
-}
-
-func (consumer *Consumer) calculateBatchAckChanCapacity() int {
-	cap := consumer.options.Concurrency * consumer.options.BatchSize * 2
-	if cap < 1000 {
-		return 1000
-	}
-	if cap > 100000 {
-		return 100000
-	}
-	return cap
-}
-
-func isNetworkError(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "broken pipe") ||
-		strings.Contains(s, "connection reset") ||
-		strings.Contains(s, "EOF") ||
-		strings.Contains(s, "closed")
 }
 
 func (consumer *Consumer) Close() {
@@ -392,4 +272,16 @@ func (consumer *Consumer) getIsClosed() bool {
 	consumer.isClosedMux.RLock()
 	defer consumer.isClosedMux.RUnlock()
 	return consumer.isClosed
+}
+
+// 工具函数保留
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "closed")
 }
