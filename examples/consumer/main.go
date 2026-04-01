@@ -12,7 +12,7 @@ import (
 
 func main() {
 	conn, err := rabbitmq.NewConn(
-		"amqp://guest:guest@localhost",
+		"amqp://guest:guest@localhost:5672",
 		rabbitmq.WithConnectionOptionsLogging,
 	)
 	if err != nil {
@@ -30,6 +30,7 @@ func main() {
 		"my_queue",
 		rabbitmq.WithConsumerOptionsRoutingKey("my_routing_key"),
 		rabbitmq.WithConsumerOptionsExchangeName("events"),
+		rabbitmq.WithConsumerOptionsConcurrency(50),
 		rabbitmq.WithConsumerOptionsExchangeDeclare,
 	)
 	if err != nil {
