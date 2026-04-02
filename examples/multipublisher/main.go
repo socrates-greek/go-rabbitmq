@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -88,8 +87,7 @@ func main() {
 			// 修改点：固定路由键为 "my_routing_key"
 			routingKey := "my_routing_key"
 
-			err := publisher.PublishWithContext(
-				context.Background(),
+			err := publisher.Publish(
 				body,
 				[]string{routingKey},
 				rabbitmq.WithPublishOptionsContentType("application/json"),

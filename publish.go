@@ -280,33 +280,19 @@ func (publisher *Publisher) PublishWithDeferredConfirmWithContext(
 // Close closes the publisher and releases resources
 // The publisher should be discarded as it's not safe for re-use
 // Only call Close() once
-//func (publisher *Publisher) Close() {
-//	// close the channel so that rabbitmq server knows that the
-//	close(publisher.stopCh)
-//	// publisher has been stopped.
-//	close(publisher.closeConnectionToManagerCh)
-//	err := publisher.chanManager.Close()
-//	if err != nil {
-//		publisher.options.Logger.Warnf("error while closing the channel: %v", err)
-//	}
-//	publisher.connManager.Close()
-//	//publisher.options.Logger.Infof("closing publisher...")
-//	//go func() {
-//	//	publisher.closeConnectionToManagerCh <- struct{}{}
-//	//}()
-//}
-
 func (publisher *Publisher) Close() {
-	// 使用 sync.Once 确保只关闭一次
-	var once sync.Once
-	once.Do(func() {
-		close(publisher.stopCh) // 发送全局退出信号
-		go func() {
-			publisher.closeConnectionToManagerCh <- struct{}{}
-		}()
-		publisher.chanManager.Close() // 关闭 AMQP 通道
-		// 关闭 AMQP 连接（假设 connManager 有 Close 方法）
-	})
+	// close the channel so that rabbitmq server knows that the
+	close(publisher.stopCh)
+	// publisher has been stopped.
+	close(publisher.closeConnectionToManagerCh)
+	err := publisher.chanManager.Close()
+	if err != nil {
+		publisher.options.Logger.Warnf("error while closing the channel: %v", err)
+	}
+	//publisher.options.Logger.Infof("closing publisher...")
+	//go func() {
+	//	publisher.closeConnectionToManagerCh <- struct{}{}
+	//}()
 }
 
 // NotifyReturn registers a listener for basic.return methods.
