@@ -21,7 +21,8 @@ const (
 
 func main() {
 	conn, err := rabbitmq.NewConn(
-		"amqp://guest:guest@localhost:5672",
+		//"amqp://guest:guest@localhost:5672",
+		"amqp://Simba_admin:Simba_123@192.168.20.201:30672",
 		rabbitmq.WithConnectionOptionsLogging,
 	)
 	if err != nil {
