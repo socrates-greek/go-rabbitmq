@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Bifang-Bird/go-rabbitmq/internal/channelmanager"
 	"github.com/Bifang-Bird/go-rabbitmq/internal/connectionmanager"
@@ -135,7 +136,8 @@ func (publisher *Publisher) startup() error {
 		return fmt.Errorf("declare exchange failed: %w", err)
 	}
 	go publisher.startNotifyFlowHandler()
-	//go publisher.startNotifyBlockedHandler()
+	// 如果需要 TCP blocking 监控，取消下面的注释
+	go publisher.startNotifyBlockedHandler()
 	return nil
 }
 
@@ -284,15 +286,23 @@ func (publisher *Publisher) Close() {
 	// close the channel so that rabbitmq server knows that the
 	close(publisher.stopCh)
 	// publisher has been stopped.
-	close(publisher.closeConnectionToManagerCh)
+	// 修复：通知 dispatcher 移除此订阅者，防止 goroutine 泄露
+	if publisher.closeConnectionToManagerCh != nil {
+		select {
+		case publisher.closeConnectionToManagerCh <- struct{}{}:
+		case <-time.After(1 * time.Second):
+			publisher.options.Logger.Warnf("timeout while closing connection manager channel")
+		}
+	}
+
 	err := publisher.chanManager.Close()
 	if err != nil {
 		publisher.options.Logger.Warnf("error while closing the channel: %v", err)
 	}
-	//publisher.options.Logger.Infof("closing publisher...")
-	//go func() {
-	//	publisher.closeConnectionToManagerCh <- struct{}{}
-	//}()
+}
+
+func (publisher *Publisher) IsClosed() bool {
+	return publisher.chanManager.IsClosed()
 }
 
 // NotifyReturn registers a listener for basic.return methods.

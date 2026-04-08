@@ -10,10 +10,13 @@ import (
 	rabbitmq "github.com/Bifang-Bird/go-rabbitmq"
 )
 
+//"amqp://Simba_admin:Simba_123@amqp-5kggpo9g-nj-public-d.amqp.tencenttdmq.com:5672"
+//"amqp://Simba_admin:Simba_123@192.168.20.201:30672",
+
 func main() {
 	conn, err := rabbitmq.NewConn(
 		//"amqp://guest:guest@localhost:5672",
-		"amqp://Simba_admin:Simba_123@192.168.20.201:30672",
+		"amqp://Simba_admin:Simba_123@amqp-5kggpo9g-nj-public-d.amqp.tencenttdmq.com:5672",
 		rabbitmq.WithConnectionOptionsLogging,
 	)
 	if err != nil {
@@ -24,15 +27,15 @@ func main() {
 	consumer, err := rabbitmq.NewConsumer(
 		conn,
 		func(d rabbitmq.Delivery) rabbitmq.Action {
-			log.Printf("consumed: %v", string(d.Body))
+			//log.Printf("consumed: %v", string(d.Body))
 			// rabbitmq.Ack, rabbitmq.NackDiscard, rabbitmq.NackRequeue
 			return rabbitmq.Ack
 		},
 		"my_queue",
 		rabbitmq.WithConsumerOptionsConsumerName("consumer_1"),
-		rabbitmq.WithConsumerOptionsRoutingKey("my_routing_key"),
+		rabbitmq.WithConsumerOptionsRoutingKey("test_key"),
 		rabbitmq.WithConsumerOptionsRoutingKey("my_routing_key_2"),
-		rabbitmq.WithConsumerOptionsExchangeName("events"),
+		rabbitmq.WithConsumerOptionsExchangeName("test-exchange"),
 		rabbitmq.WithConsumerOptionsConcurrency(10),
 		rabbitmq.WithConsumerOptionsQOSPrefetch(100),
 	)
@@ -44,15 +47,15 @@ func main() {
 	consumer2, err := rabbitmq.NewConsumer(
 		conn,
 		func(d rabbitmq.Delivery) rabbitmq.Action {
-			log.Printf("consumed 2: %v", string(d.Body))
+			//log.Printf("consumed 2: %v", string(d.Body))
 			// rabbitmq.Ack, rabbitmq.NackDiscard, rabbitmq.NackRequeue
 			return rabbitmq.Ack
 		},
 		"my_queue",
 		rabbitmq.WithConsumerOptionsQOSPrefetch(100),
 		rabbitmq.WithConsumerOptionsConsumerName("consumer_2"),
-		rabbitmq.WithConsumerOptionsRoutingKey("my_routing_key"),
-		rabbitmq.WithConsumerOptionsExchangeName("events"),
+		rabbitmq.WithConsumerOptionsRoutingKey("test_key"),
+		rabbitmq.WithConsumerOptionsExchangeName("test-exchange"),
 		rabbitmq.WithConsumerOptionsConcurrency(10),
 	)
 	if err != nil {

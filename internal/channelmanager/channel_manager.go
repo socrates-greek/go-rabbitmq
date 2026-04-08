@@ -1,6 +1,7 @@
 package channelmanager
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,8 @@ type ChannelManager struct {
 	reconnectionCount uint64
 	dispatcher        *dispatcher.Dispatcher
 	isClosed          int32
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 // NewChannelManager creates a new channel manager
@@ -30,12 +33,14 @@ func NewChannelManager(connManager *connectionmanager.ConnectionManager, log log
 	if err != nil {
 		return nil, err
 	}
-
+	ctx, cancel := context.WithCancel(context.Background())
 	chanManager := &ChannelManager{
 		logger:            log,
 		connManager:       connManager,
 		reconnectInterval: reconnectInterval,
 		dispatcher:        dispatcher.NewDispatcher(),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 	chanManager.channel.Store(ch)
 	go chanManager.startNotifyCancelOrClosed()
@@ -63,9 +68,15 @@ func (chanManager *ChannelManager) startNotifyCancelOrClosed() {
 		if !ok || atomic.LoadInt32(&chanManager.isClosed) == 1 {
 			return
 		}
+		if chanManager.ctx.Err() != nil {
+			return
+		}
 		if err != nil {
 			chanManager.logger.Errorf("attempting to reconnect to amqp channel after close with error: %v", err)
 			chanManager.reconnectLoop()
+			if chanManager.ctx.Err() != nil {
+				return
+			}
 			chanManager.logger.Warnf("successfully reconnected to amqp channel")
 			chanManager.dispatcher.Dispatch(err)
 		}
@@ -73,8 +84,14 @@ func (chanManager *ChannelManager) startNotifyCancelOrClosed() {
 		if !ok || atomic.LoadInt32(&chanManager.isClosed) == 1 {
 			return
 		}
+		if chanManager.ctx.Err() != nil {
+			return
+		}
 		chanManager.logger.Errorf("attempting to reconnect to amqp channel after cancel with error: %s", reason)
 		chanManager.reconnectLoop()
+		if chanManager.ctx.Err() != nil {
+			return
+		}
 		chanManager.logger.Warnf("successfully reconnected to amqp channel after cancel")
 		chanManager.dispatcher.Dispatch(errors.New(reason))
 	}
@@ -93,6 +110,9 @@ func (chanManager *ChannelManager) GetReconnectionCount() uint64 {
 func (chanManager *ChannelManager) reconnectLoop() {
 	for {
 		if atomic.LoadInt32(&chanManager.isClosed) == 1 {
+			return
+		}
+		if chanManager.ctx.Err() != nil {
 			return
 		}
 		time.Sleep(chanManager.reconnectInterval)
@@ -128,8 +148,18 @@ func (chanManager *ChannelManager) Close() error {
 	if !atomic.CompareAndSwapInt32(&chanManager.isClosed, 0, 1) {
 		return nil
 	}
+
+	// 取消 context，通知所有 goroutine 退出
+	if chanManager.cancel != nil {
+		chanManager.cancel()
+	}
+
 	ch := chanManager.channel.Load().(*amqp.Channel)
 	return ch.Close()
+}
+
+func (chanManager *ChannelManager) IsClosed() bool {
+	return atomic.LoadInt32(&chanManager.isClosed) == 1
 }
 
 // NotifyReconnect adds a new subscriber for channel reconnection events
